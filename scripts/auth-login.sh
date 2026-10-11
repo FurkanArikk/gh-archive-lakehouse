@@ -7,7 +7,9 @@
 # container port 8021, so the browser's redirect to http://localhost:8020 reaches the CLI.
 set -euo pipefail
 
-host="${1:?usage: auth-login.sh <workspace-url>}"
+url="${1:?usage: auth-login.sh <workspace-url>}"
+# Keep only scheme://host, so a URL copied from the address bar (…/browse?o=123) works.
+host="$(printf '%s' "$url" | sed -E 's#^(https?://[^/?#]+).*#\1#')"
 profile="${DATABRICKS_CONFIG_PROFILE:?set DATABRICKS_CONFIG_PROFILE in .env}"
 
 socat TCP-LISTEN:8021,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:8020 &
