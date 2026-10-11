@@ -1,4 +1,4 @@
-# The pipeline job. Phase 3: bronze only; silver, gold and quality tasks are added later.
+# The pipeline job: bronze -> silver. Gold and quality tasks are added later.
 # Paths are relative to this file.
 resources:
   jobs:
@@ -20,6 +20,14 @@ resources:
               - --gold-schema=${var.gold_schema}
               - --landing-volume=${var.landing_volume}
               - --checkpoint-volume=${var.checkpoint_volume}
+
+        - task_key: silver
+          depends_on:
+            - task_key: bronze
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/silver.py
+            parameters: *settings
 
       # Serverless: no cluster to configure. The environment pins the runtime version and
       # installs our wheel (built and uploaded by `databricks bundle deploy`).
