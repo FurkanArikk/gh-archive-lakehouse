@@ -56,6 +56,23 @@ make test       # pytest on a local Spark session
 make shell      # shell inside the container
 ```
 
+### 4. Create the Unity Catalog objects and load data
+
+```bash
+make setup-uc                                   # schemas + volumes; safe to rerun
+make ingest START=2026-10-06 ARGS=--dry-run     # show what would be uploaded
+make ingest START=2026-10-06                    # one day = 24 files, ~330 MB
+make ingest START=2026-10-06 END=2026-10-12     # a range of days (inclusive)
+```
+
+Ingestion runs locally because outbound internet from a Free Edition workspace is
+restricted. Files land in
+`/Volumes/<catalog>/gh_raw/landing/gharchive/date=YYYY-MM-DD/YYYY-MM-DD-H.json.gz`.
+Rerunning is safe: an hour is skipped when the volume already holds a file of the same
+size as on GH Archive, and re-uploaded when the sizes differ (e.g. an interrupted upload).
+Hours not yet published (HTTP 404) are reported as `missing`; the command exits non-zero
+only if an hour `failed` after retries.
+
 ## Configuration
 
 Unity Catalog names (catalog, schemas, volumes) are defined once, as variable defaults in

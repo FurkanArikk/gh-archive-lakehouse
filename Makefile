@@ -8,7 +8,7 @@ RUN := docker compose run --rm dev
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build shell lint format test check auth-login whoami bundle-validate clean
+.PHONY: help build shell lint format test check auth-login whoami bundle-validate setup-uc ingest clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-16s %s\n", $$1, $$2}'
@@ -42,6 +42,14 @@ whoami: .env ## Check the CLI profile works
 
 bundle-validate: .env ## Validate databricks.yml against the workspace
 	$(RUN) databricks bundle validate
+
+setup-uc: .env ## Create the UC schemas and volumes (safe to rerun)
+	$(RUN) python -m gh_lakehouse.workspace_setup
+
+# make ingest START=2026-10-06 [END=2026-10-07] [ARGS=--dry-run]
+ingest: .env ## Upload GH Archive hours to the landing volume: make ingest START=YYYY-MM-DD [END=...]
+	@test -n "$(START)" || { echo "usage: make ingest START=YYYY-MM-DD [END=YYYY-MM-DD] [ARGS=--dry-run]"; exit 1; }
+	$(RUN) python -m gh_lakehouse.ingestion --start $(START) $(if $(END),--end $(END)) $(ARGS)
 
 clean: ## Remove local caches (keeps the image and your Databricks login)
 	rm -rf .pytest_cache .ruff_cache spark-warehouse metastore_db derby.log
