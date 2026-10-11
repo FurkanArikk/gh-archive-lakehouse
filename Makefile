@@ -8,7 +8,7 @@ RUN := docker compose run --rm dev
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build shell lint format test check auth-login whoami bundle-validate setup-uc ingest clean
+.PHONY: help build shell lint format test check auth-login whoami bundle-validate deploy run-job setup-uc ingest clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-16s %s\n", $$1, $$2}'
@@ -42,6 +42,12 @@ whoami: .env ## Check the CLI profile works
 
 bundle-validate: .env ## Validate databricks.yml against the workspace
 	$(RUN) databricks bundle validate
+
+deploy: .env ## Build the wheel and deploy the bundle (job + code) to the workspace
+	$(RUN) databricks bundle deploy
+
+run-job: .env ## Run the pipeline job on serverless and wait for it
+	$(RUN) databricks bundle run gh_pipeline
 
 setup-uc: .env ## Create the UC schemas and volumes (safe to rerun)
 	$(RUN) python -m gh_lakehouse.workspace_setup

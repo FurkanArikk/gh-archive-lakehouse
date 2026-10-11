@@ -1,0 +1,31 @@
+# The pipeline job. Phase 3: bronze only; silver, gold and quality tasks are added later.
+# Paths are relative to this file.
+resources:
+  jobs:
+    gh_pipeline:
+      name: gh-archive-pipeline
+      # Two overlapping runs would race on the same streaming checkpoints.
+      max_concurrent_runs: 1
+
+      tasks:
+        - task_key: bronze
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/bronze.py
+            parameters: &settings
+              - --catalog=${var.catalog}
+              - --raw-schema=${var.raw_schema}
+              - --bronze-schema=${var.bronze_schema}
+              - --silver-schema=${var.silver_schema}
+              - --gold-schema=${var.gold_schema}
+              - --landing-volume=${var.landing_volume}
+              - --checkpoint-volume=${var.checkpoint_volume}
+
+      # Serverless: no cluster to configure. The environment pins the runtime version and
+      # installs our wheel (built and uploaded by `databricks bundle deploy`).
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: ${var.serverless_environment_version}
+            dependencies:
+              - ../dist/*.whl

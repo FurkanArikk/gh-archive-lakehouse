@@ -4,7 +4,21 @@
 bundle:
   name: gh_archive_lakehouse
 
+include:
+  - resources/*.yml
+
+artifacts:
+  gh_lakehouse:
+    type: whl
+    path: .
+    build: python -m pip wheel --no-deps --wheel-dir dist .
+    # Timestamp the wheel version on every deploy so serverless never reuses a cached copy.
+    dynamic_version: true
+
 variables:
+  serverless_environment_version:
+    description: Serverless environment version for job tasks (sets Spark/Python versions).
+    default: "6"
   catalog:
     description: Unity Catalog catalog that holds every schema below.
     default: workspace
