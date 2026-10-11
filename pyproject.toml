@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gh-lakehouse"
+version = "0.1.0"
+description = "GH Archive events to a Delta Lake medallion pipeline on Databricks"
+readme = "README.md"
+# Databricks serverless runs Python 3.12 (spark 4.2.0); keep local in lockstep.
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "pyyaml>=6.0.2",
+]
+
+[project.optional-dependencies]
+# Local development and CI only. On Databricks, Spark and Delta ship with the
+# runtime, so they must never become dependencies of the wheel we deploy:
+# installing a second pyspark on serverless would shadow the platform's one.
+dev = [
+    "pyspark==4.2.0",
+    "delta-spark==4.4.1",
+    "pytest==9.1.1",
+    "ruff==0.16.10",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gh_lakehouse"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # import sorting
+    "B",        # bugbear
+    "UP",       # pyupgrade
+    "N",        # naming
+    "SIM",      # simplifications
+    "ANN",      # type hints on every function
+    "RUF",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test functions and fixtures don't need return annotations.
+"tests/**" = ["ANN"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = ["spark: starts a local Spark session (slower)"]

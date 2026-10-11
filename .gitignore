@@ -1,0 +1,22 @@
+# Secrets and local config
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# Spark / Delta local artifacts
+spark-warehouse/
+metastore_db/
+derby.log
+
+# Databricks bundle state
+.databricks/
+
+# Local GH Archive downloads
+data/
