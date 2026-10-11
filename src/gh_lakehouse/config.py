@@ -13,6 +13,7 @@ explicitly and step 1 is skipped.
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
 from collections.abc import Mapping
@@ -128,3 +129,14 @@ def load_settings(
             f"{ENV_PREFIX}* environment variables and explicit overrides"
         )
     return Settings(**{name: values[name] for name in SETTING_NAMES})
+
+
+def add_settings_args(parser: argparse.ArgumentParser) -> None:
+    """Add an optional ``--<setting>`` flag per setting (e.g. ``--bronze-schema``)."""
+    group = parser.add_argument_group("settings (override databricks.yml defaults)")
+    for name in SETTING_NAMES:
+        group.add_argument(f"--{name.replace('_', '-')}", dest=name, default=None)
+
+
+def settings_from_args(args: argparse.Namespace) -> Settings:
+    return load_settings({name: getattr(args, name) for name in SETTING_NAMES})

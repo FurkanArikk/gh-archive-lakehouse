@@ -70,3 +70,17 @@ def test_paths_and_table_names():
     assert s.gold_table("daily_bot_share") == "workspace.gh_gold.daily_bot_share"
     with pytest.raises(ConfigError):
         s.gold_table("bad-name")
+
+
+def test_settings_from_command_line_flags(monkeypatch):
+    import argparse
+
+    from gh_lakehouse.config import add_settings_args, settings_from_args
+
+    monkeypatch.chdir(BUNDLE.parent)  # databricks.yml supplies the defaults
+    parser = argparse.ArgumentParser()
+    add_settings_args(parser)
+
+    args = parser.parse_args(["--catalog=other", "--bronze-schema", "b"])
+    s = settings_from_args(args)
+    assert (s.catalog, s.bronze_schema, s.silver_schema) == ("other", "b", "gh_silver")
