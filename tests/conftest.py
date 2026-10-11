@@ -1,8 +1,9 @@
+import gzip
 from collections.abc import Iterator
 
 import pytest
 from delta import configure_spark_with_delta_pip
-from pyspark.sql import SparkSession
+from pyspark.sql import DataFrame, SparkSession
 
 
 @pytest.fixture(scope="session")
@@ -29,3 +30,24 @@ def spark(tmp_path_factory: pytest.TempPathFactory) -> Iterator[SparkSession]:
     session = configure_spark_with_delta_pip(builder).getOrCreate()
     yield session
     session.stop()
+
+
+@pytest.fixture
+def make_bronze(spark: SparkSession, tmp_path_factory: pytest.TempPathFactory):
+    """Turn GH Archive JSON lines into a bronze DataFrame via the real bronze transformation."""
+    from gh_lakehouse.bronze import CORRUPT_RECORD, RAW_SCHEMA, to_bronze
+
+    def build(lines: list[str]) -> DataFrame:
+        root = tmp_path_factory.mktemp("landing")
+        path = root / "gharchive" / "date=2026-10-06" / "2026-10-06-15.json.gz"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(gzip.compress(("\n".join(lines) + "\n").encode()))
+        raw = (
+            spark.read.schema(RAW_SCHEMA)
+            .option("columnNameOfCorruptRecord", CORRUPT_RECORD)
+            .json(str(root / "gharchive"))
+        )
+        # Materialize: Spark refuses some queries that touch only _corrupt_record on raw JSON.
+        return spark.createDataFrame(to_bronze(raw).collect(), to_bronze(raw).schema)
+
+    return build
