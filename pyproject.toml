@@ -14,10 +14,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Ingestion and workspace setup run only in the local container, never on Databricks.
+local = [
+    "databricks-sdk==0.146.0",
+    "requests==2.34.2",
+]
 # Local development and CI only. On Databricks, Spark and Delta ship with the
 # runtime, so they must never become dependencies of the wheel we deploy:
 # installing a second pyspark on serverless would shadow the platform's one.
 dev = [
+    "gh-lakehouse[local]",
     "pyspark==4.2.0",
     "delta-spark==4.4.1",
     "pytest==9.1.1",
