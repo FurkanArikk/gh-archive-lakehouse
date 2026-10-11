@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Host user ids
+        id: ids
+        run: |
+          echo "uid=$(id -u)" >> "$GITHUB_OUTPUT"
+          echo "gid=$(id -g)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      # Same image as local development. The layer cache keeps the pyspark install
+      # and the Delta jar download off the critical path after the first run.
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: gh-lakehouse-dev:latest
+          build-args: |
+            HOST_UID=${{ steps.ids.outputs.uid }}
+            HOST_GID=${{ steps.ids.outputs.gid }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - run: make lint
+      - run: make test
