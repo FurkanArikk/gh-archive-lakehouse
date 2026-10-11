@@ -1,0 +1,34 @@
+# Databricks Asset Bundle. The `variables` block is also the project's single source of
+# configuration: gh_lakehouse.config reads the same defaults for local runs, and the
+# Databricks job will pass the resolved values to each task as parameters.
+bundle:
+  name: gh_archive_lakehouse
+
+variables:
+  catalog:
+    description: Unity Catalog catalog that holds every schema below.
+    default: workspace
+  raw_schema:
+    description: Schema for the landing and checkpoint volumes.
+    default: gh_raw
+  bronze_schema:
+    description: Schema for the raw events table.
+    default: gh_bronze
+  silver_schema:
+    description: Schema for typed per-event tables and the quarantine table.
+    default: gh_silver
+  gold_schema:
+    description: Schema for daily aggregates read by the dashboard.
+    default: gh_gold
+  landing_volume:
+    description: Volume (in raw_schema) where ingestion uploads GH Archive files.
+    default: landing
+  checkpoint_volume:
+    description: Volume (in raw_schema) for Structured Streaming checkpoints.
+    default: checkpoints
+
+# The workspace host isn't in the repo: the CLI takes it from the profile named by
+# DATABRICKS_CONFIG_PROFILE in .env. Jobs and deployment settings come in Phase 6.
+targets:
+  dev:
+    default: true
