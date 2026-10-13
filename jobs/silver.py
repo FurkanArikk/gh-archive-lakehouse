@@ -6,6 +6,7 @@ this file in an IPython kernel, where any SystemExit fails the task.
 
 import argparse
 
+from pyspark.errors import AnalysisException
 from pyspark.sql import SparkSession
 
 from gh_lakehouse.config import add_settings_args, settings_from_args
@@ -22,9 +23,13 @@ def main(argv: list[str] | None = None) -> None:
     for spec in SPECS:
         table = settings.silver_table(spec.table)
         print(f"silver: {table} has {spark.table(table).count()} row(s)")
+    # Quarantine is created inside foreachBatch, in a cloned session; this session's
+    # catalog.tableExists() can miss it, so read the table and handle "not found".
     quarantine = settings.silver_table(QUARANTINE_TABLE)
-    if spark.catalog.tableExists(quarantine):
+    try:
         print(f"silver: {quarantine} has {spark.table(quarantine).count()} row(s)")
+    except AnalysisException:
+        print(f"silver: {quarantine} does not exist (nothing quarantined yet)")
 
 
 if __name__ == "__main__":
