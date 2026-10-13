@@ -24,7 +24,11 @@ local = [
 # installing a second pyspark on serverless would shadow the platform's one.
 dev = [
     "gh-lakehouse[local]",
-    "pyspark==4.2.0",
+    # [connect]: lets the tests also run against a local Spark Connect server, the same
+    # client API that serverless uses (see tests/conftest.py).
+    "pyspark[connect]==4.2.0",
+    # PySpark 4.2 warns it doesn't fully support pandas 3 yet (pulled in by [connect]).
+    "pandas<3",
     "delta-spark==4.4.1",
     "pytest==9.1.1",
     "ruff==0.16.10",

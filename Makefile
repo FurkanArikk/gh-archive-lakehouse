@@ -8,7 +8,7 @@ RUN := docker compose run --rm dev
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build shell lint format test check auth-login whoami bundle-validate deploy run-job setup-uc ingest clean
+.PHONY: help build shell lint format test test-connect check auth-login whoami bundle-validate deploy run-job reset-checkpoint setup-uc ingest clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-16s %s\n", $$1, $$2}'
@@ -28,10 +28,13 @@ lint: .env ## Ruff lint + format check
 format: .env ## Auto-fix lint issues and format
 	$(RUN) sh -c "ruff check --fix . && ruff format ."
 
-test: .env ## Run the pytest suite
+test: .env ## Run the pytest suite on classic local Spark
 	$(RUN) pytest
 
-check: lint test ## Lint and test (what CI runs)
+test-connect: .env ## Run the pytest suite through local Spark Connect (serverless's client API)
+	$(RUN) sh -c "GHL_SPARK_CONNECT=1 pytest"
+
+check: lint test test-connect ## Lint and test both ways (what CI runs)
 
 auth-login: .env ## OAuth login: make auth-login HOST=https://<workspace>.cloud.databricks.com
 	@test -n "$(HOST)" || { echo "usage: make auth-login HOST=https://<workspace-url>"; exit 1; }
@@ -48,6 +51,11 @@ deploy: .env ## Build the wheel and deploy the bundle (job + code) to the worksp
 
 run-job: .env ## Run the pipeline job on serverless and wait for it
 	$(RUN) databricks bundle run gh_pipeline
+
+# Replays a stream from the start on its next run. Safe for silver: MERGE skips known event_ids.
+reset-checkpoint: .env ## Delete one stream's checkpoint: make reset-checkpoint NAME=silver_issues_events
+	@test -n "$(NAME)" || { echo "usage: make reset-checkpoint NAME=<checkpoint, e.g. silver_issues_events>"; exit 1; }
+	$(RUN) sh -c 'databricks fs rm -r "dbfs:$$(python -c "from gh_lakehouse.config import load_settings; print(load_settings().checkpoint_path)")/$(NAME)"'
 
 setup-uc: .env ## Create the UC schemas and volumes (safe to rerun)
 	$(RUN) python -m gh_lakehouse.workspace_setup

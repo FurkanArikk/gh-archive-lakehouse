@@ -1,9 +1,16 @@
 import gzip
+import os
+import warnings
 from collections.abc import Iterator
 
 import pytest
 from delta import configure_spark_with_delta_pip
 from pyspark.sql import DataFrame, SparkSession
+
+# GHL_SPARK_CONNECT=1 runs the suite through a local Spark Connect server: the same client
+# API as Databricks serverless, which rejects things classic PySpark allows (e.g.
+# withColumns({}), mode("errorifexists")). CI runs the suite both ways.
+SPARK_CONNECT = os.environ.get("GHL_SPARK_CONNECT") == "1"
 
 
 @pytest.fixture(scope="session")
@@ -13,9 +20,10 @@ def spark(tmp_path_factory: pytest.TempPathFactory) -> Iterator[SparkSession]:
     Starting a JVM takes several seconds, so it's session-scoped. Settings are tuned for
     tiny fixtures: 2 shuffle partitions instead of 200, and no UI.
     """
+    base = SparkSession.builder
+    base = base.remote("local[2]") if SPARK_CONNECT else base.master("local[2]")
     builder = (
-        SparkSession.builder.master("local[2]")
-        .appName("gh-lakehouse-tests")
+        base.appName("gh-lakehouse-tests")
         .config("spark.sql.shuffle.partitions", "2")
         .config("spark.ui.enabled", "false")
         # GH Archive timestamps are UTC; Databricks serverless sessions default to UTC too.
@@ -27,7 +35,11 @@ def spark(tmp_path_factory: pytest.TempPathFactory) -> Iterator[SparkSession]:
             "org.apache.spark.sql.delta.catalog.DeltaCatalog",
         )
     )
-    session = configure_spark_with_delta_pip(builder).getOrCreate()
+    with warnings.catch_warnings():
+        # Connect applies these at server start, then warns when it re-applies them to the
+        # session ("cannot modify static config"). The values are in effect; ignore the noise.
+        warnings.filterwarnings("ignore", message="Failed to set spark")
+        session = configure_spark_with_delta_pip(builder).getOrCreate()
     yield session
     session.stop()
 
