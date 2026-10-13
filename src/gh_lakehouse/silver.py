@@ -24,7 +24,15 @@ from typing import TYPE_CHECKING
 
 from pyspark.sql import Column, DataFrame, Window
 from pyspark.sql import functions as F
-from pyspark.sql.types import StringType, StructField, StructType
+from pyspark.sql.types import (
+    ArrayType,
+    DataType,
+    IntegerType,
+    LongType,
+    StringType,
+    StructField,
+    StructType,
+)
 
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
@@ -67,16 +75,151 @@ class EventSpec:
     checks: Callable[[Column], dict[str, Column]] = field(default=lambda p: {})
 
 
+def _path(p: Column, dotted: str) -> Column:
+    """``_path(p, "pull_request.head.sha")`` -> p.pull_request.head.sha"""
+    col = p
+    for part in dotted.split("."):
+        col = col.getField(part)
+    return col
+
+
+def _ts(col: Column) -> Column:
+    return F.try_to_timestamp(col, F.lit(GH_TIMESTAMP_FORMAT))
+
+
+def _struct(**fields: DataType) -> StructType:
+    return StructType([StructField(name, dtype) for name, dtype in fields.items()])
+
+
+_SHA = r"^[0-9a-f]{40}$"
+_NAME = _struct(name=StringType())
+_LOGIN = _struct(login=StringType())
+
+# ---- WatchEvent: someone starred a repo.
 WATCH = EventSpec(
     event_type="WatchEvent",
     table="watch_events",
-    payload_schema=StructType([StructField("action", StringType())]),
+    payload_schema=_struct(action=StringType()),
     # The only payload field is action, always "started"; it's validated, not stored.
     required=("action",),
     actions=frozenset({"started"}),
 )
 
-SPECS: tuple[EventSpec, ...] = (WATCH,)
+# ---- PushEvent: since the 2025 Events API change there are no commits or sizes, only refs.
+PUSH = EventSpec(
+    event_type="PushEvent",
+    table="push_events",
+    payload_schema=_struct(
+        push_id=LongType(),
+        ref=StringType(),
+        head=StringType(),
+        before=StringType(),
+    ),
+    columns=lambda p: {
+        "push_id": p.push_id,
+        "ref": p.ref,
+        # refs/heads/main -> main; anything that isn't a branch ref stays null.
+        "branch": F.when(
+            p.ref.startswith("refs/heads/"), F.regexp_replace(p.ref, "^refs/heads/", "")
+        ),
+        "head_sha": p.head,
+        "before_sha": p.before,
+    },
+    required=("push_id", "ref", "head"),
+    checks=lambda p: {"invalid_head_sha": p.head.isNotNull() & ~p.head.rlike(_SHA)},
+)
+
+# ---- PullRequestEvent: the payload's pull_request now has only id, number, url, head, base,
+# so timestamps (created_at, merged_at) come from the event's own created_at.
+_PR_SIDE = _struct(
+    ref=StringType(), sha=StringType(), repo=_struct(id=LongType(), name=StringType())
+)
+PULL_REQUEST = EventSpec(
+    event_type="PullRequestEvent",
+    table="pull_request_events",
+    payload_schema=_struct(
+        action=StringType(),
+        number=IntegerType(),
+        pull_request=_struct(id=LongType(), number=IntegerType(), head=_PR_SIDE, base=_PR_SIDE),
+        label=_NAME,
+        assignee=_LOGIN,
+    ),
+    columns=lambda p: {
+        "action": p.action,
+        "pr_id": p.pull_request.id,
+        "pr_number": p.number,
+        "head_ref": p.pull_request.head.ref,
+        "head_sha": p.pull_request.head.sha,
+        "head_repo_id": p.pull_request.head.repo.id,
+        "base_ref": p.pull_request.base.ref,
+        "base_sha": p.pull_request.base.sha,
+        "base_repo_id": p.pull_request.base.repo.id,
+        # Head in a different repo = PR from a fork. Null when the fork was deleted.
+        "is_from_fork": p.pull_request.head.repo.id != p.pull_request.base.repo.id,
+        "label_name": p.label.getField("name"),
+        "assignee_login": p.assignee.login,
+    },
+    required=("action", "number", "pull_request.id"),
+    # Set from a full day of real data (see docs). "merged" is new: merges used to be
+    # "closed" with merged=true. Anything else is quarantined so new actions get noticed.
+    actions=frozenset(
+        {"opened", "closed", "reopened", "merged", "labeled", "unlabeled", "assigned", "unassigned"}
+    ),
+)
+
+# ---- IssuesEvent: still carries the full issue, including its own timestamps.
+ISSUES = EventSpec(
+    event_type="IssuesEvent",
+    table="issues_events",
+    payload_schema=_struct(
+        action=StringType(),
+        issue=_struct(
+            id=LongType(),
+            number=IntegerType(),
+            title=StringType(),
+            state=StringType(),
+            state_reason=StringType(),
+            user=_struct(login=StringType(), type=StringType()),
+            created_at=StringType(),
+            closed_at=StringType(),
+            comments=IntegerType(),
+            labels=ArrayType(_NAME),
+        ),
+        label=_NAME,
+    ),
+    columns=lambda p: {
+        "action": p.action,
+        "issue_id": p.issue.id,
+        "issue_number": p.issue.number,
+        "title": p.issue.title,
+        "state": p.issue.state,
+        "state_reason": p.issue.state_reason,
+        "author_login": p.issue.user.login,
+        # The issue author's account type is in the payload (unlike the event actor's).
+        "author_is_bot": p.issue.user.getField("type") == "Bot",
+        "issue_created_at": _ts(p.issue.created_at),
+        "issue_closed_at": _ts(p.issue.closed_at),
+        "comment_count": p.issue.comments,
+        "label_names": F.transform(p.issue.labels, lambda label: label.getField("name")),
+        "label_name": p.label.getField("name"),
+    },
+    required=("action", "issue.id", "issue.number", "issue.created_at"),
+    actions=frozenset(
+        {"opened", "closed", "reopened", "labeled", "unlabeled", "assigned", "unassigned"}
+    ),
+    checks=lambda p: {
+        "invalid_issue_created_at": p.issue.created_at.isNotNull()
+        & _ts(p.issue.created_at).isNull(),
+        "invalid_issue_closed_at": p.issue.closed_at.isNotNull() & _ts(p.issue.closed_at).isNull(),
+        # Deliberately not checked: a "closed" event whose issue snapshot has no closed_at.
+        # On 2026-10-06, 17 of 3,714 closes look like that: the snapshot still says
+        # state=open, taken just before the close. The event is genuine, so it stays in
+        # silver with issue_closed_at null; gold uses the event's created_at as close time.
+    },
+)
+
+SPECS: tuple[EventSpec, ...] = (WATCH, PUSH, PULL_REQUEST, ISSUES)
+MODELED_TYPES = frozenset(spec.event_type for spec in SPECS)
 
 
 # --------------------------------------------------------------------------- transformations
@@ -118,7 +261,10 @@ def parse_events(bronze: DataFrame, spec: EventSpec) -> DataFrame:
             "_p": F.from_json(F.col("payload"), spec.payload_schema),
         }
     )
-    df = df.withColumns(_envelope()).withColumns(spec.columns(p))
+    df = df.withColumns(_envelope())
+    if payload_columns := spec.columns(p):
+        # Guarded: Spark Connect (serverless) rejects withColumns({}), local Spark allows it.
+        df = df.withColumns(payload_columns)
 
     reasons = [
         # Spark keeps fields parsed before a JSON error, so check this first and
@@ -130,7 +276,9 @@ def parse_events(bronze: DataFrame, spec: EventSpec) -> DataFrame:
         _reason(F.col("repo_id").isNull(), "missing_repo_id"),
         _reason(F.col("payload").isNull() | p.isNull(), "invalid_payload"),
     ]
-    reasons += [_reason(p.getField(f).isNull(), f"missing_{f}") for f in spec.required]
+    reasons += [
+        _reason(_path(p, f).isNull(), f"missing_{f.replace('.', '_')}") for f in spec.required
+    ]
     if spec.actions is not None:
         action = p.getField("action")
         allowed = F.lit(sorted(spec.actions))
@@ -181,9 +329,13 @@ def quarantine_rows(parsed: DataFrame, target_table: str) -> DataFrame:
 
 
 def _ensure_table(df: DataFrame, table: str) -> None:
-    spark = df.sparkSession
-    if not spark.catalog.tableExists(table):
-        df.limit(0).write.format("delta").saveAsTable(table)
+    """Create ``table`` with ``df``'s schema unless it exists.
+
+    mode("ignore") lets the server decide atomically, instead of asking
+    catalog.tableExists() first: on serverless, foreachBatch runs in a cloned session whose
+    catalog view can be stale.
+    """
+    df.limit(0).write.format("delta").mode("ignore").saveAsTable(table)
 
 
 def merge_new_events(df: DataFrame, table: str) -> None:
@@ -252,17 +404,60 @@ def run_spec(
     query.awaitTermination()
 
 
+UNCLASSIFIED = "unclassified"
+
+
+def unclassified_rows(bronze: DataFrame) -> DataFrame:
+    """Corrupt bronze rows that no event-type stream will pick up.
+
+    A corrupt row whose partially parsed ``event_type`` is a modelled type reaches that
+    type's stream and is quarantined there. This catches the rest (type missing or not
+    modelled), so "never drop records" holds for every corrupt line.
+    """
+    modeled = sorted(MODELED_TYPES)
+    unmatched = F.col("event_type").isNull() | ~F.col("event_type").isin(*modeled)
+    return (
+        bronze.filter(F.col("_corrupt_record").isNotNull() & unmatched)
+        .withColumn("_raw_event_id", F.col("event_id"))
+        .withColumn(ERRORS, F.array(F.lit("corrupt_record")))
+    )
+
+
+def run_unclassified(spark: SparkSession, *, source: str, quarantine: str, checkpoint: str) -> None:
+    def batch(df: DataFrame, batch_id: int) -> None:
+        bad = quarantine_rows(unclassified_rows(df), UNCLASSIFIED)
+        if not bad.isEmpty():
+            append_quarantine(bad, quarantine, app_id=f"silver:{UNCLASSIFIED}", batch_id=batch_id)
+
+    query = (
+        spark.readStream.table(source)
+        .writeStream.foreachBatch(batch)
+        .option("checkpointLocation", checkpoint)
+        .trigger(availableNow=True)
+        .start()
+    )
+    query.awaitTermination()
+
+
 def run_silver(
     spark: SparkSession, settings: Settings, specs: tuple[EventSpec, ...] = SPECS
 ) -> None:
     from gh_lakehouse.bronze import BRONZE_TABLE
 
+    source = settings.bronze_table(BRONZE_TABLE)
+    quarantine = settings.silver_table(QUARANTINE_TABLE)
     for spec in specs:
         run_spec(
             spark,
             spec,
-            source=settings.bronze_table(BRONZE_TABLE),
+            source=source,
             target=settings.silver_table(spec.table),
-            quarantine=settings.silver_table(QUARANTINE_TABLE),
+            quarantine=quarantine,
             checkpoint=f"{settings.checkpoint_path}/silver_{spec.table}",
         )
+    run_unclassified(
+        spark,
+        source=source,
+        quarantine=quarantine,
+        checkpoint=f"{settings.checkpoint_path}/silver_{UNCLASSIFIED}",
+    )
