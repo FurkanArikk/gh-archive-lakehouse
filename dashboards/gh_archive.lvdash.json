@@ -6,6 +6,7 @@
       "queryLines": [
         "SELECT\n",
         "  (SELECT sum(events) FROM daily_bot_share)                                  AS events,\n",
+        "  (SELECT count(DISTINCT event_date) FROM daily_bot_share)                    AS days,\n",
         "  (SELECT round(100 * sum(bot_events) / sum(events), 1) FROM daily_bot_share) AS bot_share_pct,\n",
         "  (SELECT sum(stars) FROM repo_star_growth)                                   AS stars,\n",
         "  (SELECT count(*) FROM pr_time_to_merge)                                     AS prs_merged,\n",
@@ -13,11 +14,11 @@
       ]
     },
     {
-      "name": "hourly",
-      "displayName": "Events per hour",
+      "name": "daily",
+      "displayName": "Events per day",
       "queryLines": [
-        "SELECT hour, event_type, events, bot_events\n",
-        "FROM hourly_event_volume"
+        "SELECT event_date, event_type, events, bot_events, round(100 * bot_share, 1) AS bot_share_pct\n",
+        "FROM daily_bot_share"
       ]
     },
     {
@@ -54,26 +55,21 @@
     },
     {
       "name": "pr_kpis",
-      "displayName": "PR merge timing",
+      "displayName": "PR merges",
       "queryLines": [
-        "SELECT count(*)                                              AS merged,\n",
-        "       count(hours_to_merge)                                 AS timed,\n",
-        "       round(100 * count(hours_to_merge) / count(*), 1)      AS coverage_pct,\n",
-        "       round(percentile(hours_to_merge, 0.5) * 60, 1)        AS median_minutes,\n",
-        "       round(percentile(hours_to_merge, 0.9), 2)             AS p90_hours\n",
+        "SELECT count(*)                                         AS merged,\n",
+        "       count(hours_to_merge)                            AS timed,\n",
+        "       round(100 * count(hours_to_merge) / count(*), 1) AS coverage_pct\n",
         "FROM pr_time_to_merge"
       ]
     },
     {
-      "name": "pr_by_author",
-      "displayName": "Timed merges by who opened the PR",
+      "name": "pr_daily",
+      "displayName": "PRs merged per day",
       "queryLines": [
-        "SELECT CASE WHEN opened_by_bot THEN 'bot' ELSE 'human' END AS opened_by,\n",
-        "       count(*) AS timed_merges,\n",
-        "       round(percentile(hours_to_merge, 0.5) * 60, 1) AS median_minutes\n",
+        "SELECT event_date, count(*) AS merged_prs, count(hours_to_merge) AS timed\n",
         "FROM pr_time_to_merge\n",
-        "WHERE hours_to_merge IS NOT NULL\n",
-        "GROUP BY 1"
+        "GROUP BY event_date"
       ]
     },
     {
@@ -96,6 +92,19 @@
         "       round(percentile(days_to_close, 0.5), 1)                      AS median_days\n",
         "FROM issue_time_to_close\n",
         "GROUP BY 1, 2"
+      ]
+    },
+    {
+      "name": "push_hours",
+      "displayName": "PushEvents per hour and day, gaps as zero",
+      "queryLines": [
+        "WITH days AS (SELECT DISTINCT event_date FROM daily_bot_share),\n",
+        "     hours AS (SELECT explode(sequence(0, 23)) AS hour)\n",
+        "SELECT CAST(d.event_date AS STRING) AS day, h.hour, coalesce(v.events, 0) AS pushes\n",
+        "FROM days d\n",
+        "CROSS JOIN hours h\n",
+        "LEFT JOIN hourly_event_volume v\n",
+        "  ON v.event_date = d.event_date AND v.hour = h.hour AND v.event_type = 'PushEvent'"
       ]
     },
     {
@@ -132,7 +141,7 @@
         {
           "widget": {
             "name": "intro",
-            "textbox_spec": "# GitHub activity, 2026-10-06\nPublic GitHub events from GH Archive, processed bronze → silver → gold on Databricks serverless. Counts cover the four modelled event types: pushes, pull requests, issues and stars."
+            "textbox_spec": "# GitHub activity, 2026-10-06 to 2026-10-12\nPublic GitHub events from GH Archive, processed bronze → silver → gold on Databricks serverless, for the four modelled event types: pushes, pull requests, issues and stars. GH Archive's event feed is a sample: in this data only about 2% of PRs and issues show more than one event. Totals undercount GitHub; shares and day-to-day comparisons hold up."
           },
           "position": {
             "x": 0,
@@ -379,22 +388,70 @@
           "position": {
             "x": 4,
             "y": 2,
-            "width": 2,
+            "width": 1,
             "height": 3
           }
         },
         {
           "widget": {
-            "name": "hourly",
+            "name": "kpi_days",
             "queries": [
               {
                 "name": "main_query",
                 "query": {
-                  "datasetName": "hourly",
+                  "datasetName": "kpis",
                   "fields": [
                     {
-                      "name": "hour",
-                      "expression": "`hour`"
+                      "name": "days",
+                      "expression": "`days`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "days",
+                  "displayName": "Days loaded",
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "none",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Days loaded"
+              }
+            }
+          },
+          "position": {
+            "x": 5,
+            "y": 2,
+            "width": 1,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "daily",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "daily",
+                  "fields": [
+                    {
+                      "name": "event_date",
+                      "expression": "`event_date`"
                     },
                     {
                       "name": "events",
@@ -414,11 +471,11 @@
               "widgetType": "line",
               "encodings": {
                 "x": {
-                  "fieldName": "hour",
+                  "fieldName": "event_date",
                   "scale": {
-                    "type": "quantitative"
+                    "type": "temporal"
                   },
-                  "displayName": "hour"
+                  "displayName": "event date"
                 },
                 "y": {
                   "fieldName": "events",
@@ -437,9 +494,9 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Events per hour (UTC)",
+                "title": "Events per day",
                 "showDescription": true,
-                "description": "GH Archive has no PushEvents for 20:00–23:59 UTC this day; the data quality page records it."
+                "description": "Pushes are missing on 2026-10-07 and partly on 10-06, 10-08, 10-09 and 10-10: gaps in GH Archive itself (see Pipeline health)."
               }
             }
           },
@@ -553,7 +610,9 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Most active repositories (all events)"
+                "title": "Most active repositories (all events)",
+                "showDescription": true,
+                "description": "Dominated by single-account automated push streams."
               }
             }
           },
@@ -629,7 +688,7 @@
         {
           "widget": {
             "name": "pr_caveat",
-            "textbox_spec": "### Read time-to-merge with its coverage\nPull request payloads no longer carry timestamps, so a merge can only be timed when its `opened` event was ingested too. With one day of data that is a small, fast-merging minority (merge queues and bots). Coverage rises as more days are loaded."
+            "textbox_spec": "### Why there is no PR time-to-merge here\nPull request payloads no longer carry timestamps, so a merge can only be timed when its `opened` event is in the data too. Because the feed is sampled, that is true for under 2% of merges, on every day of the week. Issue payloads still carry their own timestamps, so time-to-close is reliable."
           },
           "position": {
             "x": 0,
@@ -710,7 +769,7 @@
               "encodings": {
                 "value": {
                   "fieldName": "coverage_pct",
-                  "displayName": "Coverage %",
+                  "displayName": "Merges with open event %",
                   "format": {
                     "type": "number-plain",
                     "abbreviation": "none",
@@ -723,64 +782,14 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Coverage %",
+                "title": "Merges with open event %",
                 "showDescription": true,
-                "description": "Merged PRs whose opening is in the data."
+                "description": "Share of merges that could be timed."
               }
             }
           },
           "position": {
             "x": 1,
-            "y": 2,
-            "width": 1,
-            "height": 3
-          }
-        },
-        {
-          "widget": {
-            "name": "pr_median",
-            "queries": [
-              {
-                "name": "main_query",
-                "query": {
-                  "datasetName": "pr_kpis",
-                  "fields": [
-                    {
-                      "name": "median_minutes",
-                      "expression": "`median_minutes`"
-                    }
-                  ],
-                  "disaggregated": true
-                }
-              }
-            ],
-            "spec": {
-              "version": 2,
-              "widgetType": "counter",
-              "encodings": {
-                "value": {
-                  "fieldName": "median_minutes",
-                  "displayName": "Median minutes to merge",
-                  "format": {
-                    "type": "number-plain",
-                    "abbreviation": "none",
-                    "decimalPlaces": {
-                      "type": "max",
-                      "places": 1
-                    }
-                  }
-                }
-              },
-              "frame": {
-                "showTitle": true,
-                "title": "Median minutes to merge",
-                "showDescription": true,
-                "description": "Of timed merges only."
-              }
-            }
-          },
-          "position": {
-            "x": 2,
             "y": 2,
             "width": 1,
             "height": 3
@@ -828,7 +837,7 @@
             }
           },
           "position": {
-            "x": 3,
+            "x": 2,
             "y": 2,
             "width": 1,
             "height": 3
@@ -876,9 +885,9 @@
             }
           },
           "position": {
-            "x": 4,
+            "x": 3,
             "y": 2,
-            "width": 1,
+            "width": 2,
             "height": 3
           }
         },
@@ -934,20 +943,20 @@
         },
         {
           "widget": {
-            "name": "pr_by_author",
+            "name": "pr_daily",
             "queries": [
               {
                 "name": "main_query",
                 "query": {
-                  "datasetName": "pr_by_author",
+                  "datasetName": "pr_daily",
                   "fields": [
                     {
-                      "name": "opened_by",
-                      "expression": "`opened_by`"
+                      "name": "event_date",
+                      "expression": "`event_date`"
                     },
                     {
-                      "name": "median_minutes",
-                      "expression": "`median_minutes`"
+                      "name": "merged_prs",
+                      "expression": "`merged_prs`"
                     }
                   ],
                   "disaggregated": true
@@ -959,23 +968,23 @@
               "widgetType": "bar",
               "encodings": {
                 "x": {
-                  "fieldName": "opened_by",
+                  "fieldName": "event_date",
                   "scale": {
-                    "type": "categorical"
+                    "type": "temporal"
                   },
-                  "displayName": "opened by"
+                  "displayName": "event date"
                 },
                 "y": {
-                  "fieldName": "median_minutes",
+                  "fieldName": "merged_prs",
                   "scale": {
                     "type": "quantitative"
                   },
-                  "displayName": "median minutes"
+                  "displayName": "merged prs"
                 }
               },
               "frame": {
                 "showTitle": true,
-                "title": "Median minutes to merge, by who opened the PR"
+                "title": "PRs merged per day"
               }
             }
           },
@@ -1125,7 +1134,7 @@
         {
           "widget": {
             "name": "dq_intro",
-            "textbox_spec": "### Data quality\nEvery pipeline run checks bronze, silver and gold and appends the results to `dq_results`. Failing `error` checks stop the job; `warn` checks are recorded only. This page shows the latest result of each check."
+            "textbox_spec": "### Data quality\nEvery pipeline run checks bronze, silver and gold and appends the results to `dq_results`. Failing `error` checks stop the job; `warn` checks are recorded only. Below: the latest result of each check, and the hourly push volume that the completeness warnings are about."
           },
           "position": {
             "x": 0,
@@ -1280,6 +1289,73 @@
         },
         {
           "widget": {
+            "name": "push_hours",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "push_hours",
+                  "fields": [
+                    {
+                      "name": "hour",
+                      "expression": "`hour`"
+                    },
+                    {
+                      "name": "pushes",
+                      "expression": "`pushes`"
+                    },
+                    {
+                      "name": "day",
+                      "expression": "`day`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "hour",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "hour"
+                },
+                "y": {
+                  "fieldName": "pushes",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "pushes"
+                },
+                "color": {
+                  "fieldName": "day",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "day"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "PushEvents per hour (UTC), by day",
+                "showDescription": true,
+                "description": "Hours without any PushEvent are drawn as zero. All files were present; the gaps are in GH Archive's data."
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 5,
+            "width": 6,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
             "name": "dq_table",
             "queries": [
               {
@@ -1363,7 +1439,7 @@
           },
           "position": {
             "x": 0,
-            "y": 5,
+            "y": 12,
             "width": 6,
             "height": 10
           }
