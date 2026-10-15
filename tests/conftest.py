@@ -25,6 +25,9 @@ def spark(tmp_path_factory: pytest.TempPathFactory) -> Iterator[SparkSession]:
     builder = (
         base.appName("gh-lakehouse-tests")
         .config("spark.sql.shuffle.partitions", "2")
+        # Delta reads each table's log with 50 tasks by default; on tiny test tables that
+        # dominates runtime (the gold end-to-end tests went from ~3 min each to seconds).
+        .config("spark.databricks.delta.snapshotPartitions", "2")
         .config("spark.ui.enabled", "false")
         # GH Archive timestamps are UTC; Databricks serverless sessions default to UTC too.
         .config("spark.sql.session.timeZone", "UTC")
@@ -61,5 +64,22 @@ def make_bronze(spark: SparkSession, tmp_path_factory: pytest.TempPathFactory):
         )
         # Materialize: Spark refuses some queries that touch only _corrupt_record on raw JSON.
         return spark.createDataFrame(to_bronze(raw).collect(), to_bronze(raw).schema)
+
+    return build
+
+
+@pytest.fixture
+def make_silver(make_bronze):
+    """GH Archive lines -> the four silver DataFrames, via the real bronze and silver code."""
+    from gh_lakehouse.gold import Silver
+    from gh_lakehouse.silver import ISSUES, PULL_REQUEST, PUSH, WATCH, parse_events, valid_rows
+
+    def build(lines: list[str]) -> Silver:
+        bronze = make_bronze(lines)
+        tables = []
+        for spec in (WATCH, PUSH, PULL_REQUEST, ISSUES):
+            rows = bronze.filter(bronze.event_type == spec.event_type)
+            tables.append(valid_rows(parse_events(rows, spec), spec))
+        return Silver(*tables)
 
     return build
