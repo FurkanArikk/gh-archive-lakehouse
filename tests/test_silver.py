@@ -194,14 +194,19 @@ def test_push_events(make_bronze):
 
 def test_push_branch_is_null_for_tag_refs_and_bad_sha_is_quarantined(make_bronze):
     base = lines_of("PushEvent")[0]
+    sha256 = "881757d8ae2336174eccf7ee671126e646cc4a73ff8e41e330a64d26207a4428"  # real, 2026-10-12
     lines = [
         edit(base, id="201", payload={"ref": "refs/tags/v1.0"}),
         edit(base, id="202", payload={"head": "not-a-sha"}),
+        edit(base, id="203", payload={"head": sha256, "before": "0" * 64}),  # SHA-256 repo
+        edit(base, id="204", payload={"head": "a" * 50}),  # neither 40 nor 64
     ]
     parsed = parse_events(make_bronze(lines), PUSH)
-    assert valid_rows(parsed, PUSH).first().branch is None
+    valid = {r.event_id: r for r in valid_rows(parsed, PUSH).collect()}
+    assert valid[201].branch is None
+    assert valid[203].head_sha == sha256
     q = {r.event_id: r.reasons for r in quarantine_rows(parsed, "t").collect()}
-    assert q == {"202": ["invalid_head_sha"]}
+    assert q == {"202": ["invalid_head_sha"], "204": ["invalid_head_sha"]}
 
 
 def test_pull_request_events(make_bronze):

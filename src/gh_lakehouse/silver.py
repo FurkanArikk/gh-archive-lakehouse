@@ -91,7 +91,9 @@ def _struct(**fields: DataType) -> StructType:
     return StructType([StructField(name, dtype) for name, dtype in fields.items()])
 
 
-_SHA = r"^[0-9a-f]{40}$"
+# SHA-1 (40 hex) or SHA-256 (64 hex): GitHub supports SHA-256 repositories, and one showed
+# up on 2026-10-12, quarantined by the original 40-only rule.
+_SHA = r"^([0-9a-f]{40}|[0-9a-f]{64})$"
 _NAME = _struct(name=StringType())
 _LOGIN = _struct(login=StringType())
 
