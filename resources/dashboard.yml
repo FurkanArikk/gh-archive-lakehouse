@@ -1,0 +1,10 @@
+# AI/BI dashboard on the gold tables. Queries use unqualified table names; the catalog and
+# schema come from the bundle variables via dataset_catalog / dataset_schema.
+resources:
+  dashboards:
+    gh_archive:
+      display_name: GH Archive Lakehouse
+      file_path: ../dashboards/gh_archive.lvdash.json
+      warehouse_id: ${var.warehouse_id}
+      dataset_catalog: ${var.catalog}
+      dataset_schema: ${var.gold_schema}

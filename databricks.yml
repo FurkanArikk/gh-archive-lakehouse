@@ -16,6 +16,10 @@ artifacts:
     dynamic_version: true
 
 variables:
+  warehouse_id:
+    description: SQL warehouse that runs the dashboard queries (looked up by name).
+    lookup:
+      warehouse: Serverless Starter Warehouse
   serverless_environment_version:
     description: Serverless environment version for job tasks (sets Spark/Python versions).
     default: "6"
