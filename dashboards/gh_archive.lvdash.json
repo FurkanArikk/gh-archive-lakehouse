@@ -1,11 +1,126 @@
 {
   "datasets": [
     {
-      "name": "bot_share",
-      "displayName": "Daily bot share",
+      "name": "kpis",
+      "displayName": "Headline numbers",
       "queryLines": [
-        "SELECT event_date, event_type, events, bot_events, bot_share\n",
-        "FROM daily_bot_share"
+        "SELECT\n",
+        "  (SELECT sum(events) FROM daily_bot_share)                                  AS events,\n",
+        "  (SELECT round(100 * sum(bot_events) / sum(events), 1) FROM daily_bot_share) AS bot_share_pct,\n",
+        "  (SELECT sum(stars) FROM repo_star_growth)                                   AS stars,\n",
+        "  (SELECT count(*) FROM pr_time_to_merge)                                     AS prs_merged,\n",
+        "  (SELECT count(*) FROM issue_time_to_close)                                  AS issues_closed"
+      ]
+    },
+    {
+      "name": "hourly",
+      "displayName": "Events per hour",
+      "queryLines": [
+        "SELECT hour, event_type, events, bot_events\n",
+        "FROM hourly_event_volume"
+      ]
+    },
+    {
+      "name": "bot_share",
+      "displayName": "Bot share by event type",
+      "queryLines": [
+        "SELECT event_type, round(100 * sum(bot_events) / sum(events), 1) AS bot_share_pct\n",
+        "FROM daily_bot_share\n",
+        "GROUP BY event_type"
+      ]
+    },
+    {
+      "name": "top_active",
+      "displayName": "Most active repositories",
+      "queryLines": [
+        "SELECT repo_name, sum(events) AS events, sum(pushes) AS pushes,\n",
+        "       sum(prs_opened) AS prs_opened, sum(issues_opened) AS issues_opened\n",
+        "FROM repo_daily_activity\n",
+        "GROUP BY repo_name\n",
+        "ORDER BY events DESC\n",
+        "LIMIT 15"
+      ]
+    },
+    {
+      "name": "top_starred",
+      "displayName": "Most starred repositories",
+      "queryLines": [
+        "SELECT repo_name, sum(stars) AS stars\n",
+        "FROM repo_star_growth\n",
+        "GROUP BY repo_name\n",
+        "ORDER BY stars DESC\n",
+        "LIMIT 15"
+      ]
+    },
+    {
+      "name": "pr_kpis",
+      "displayName": "PR merge timing",
+      "queryLines": [
+        "SELECT count(*)                                              AS merged,\n",
+        "       count(hours_to_merge)                                 AS timed,\n",
+        "       round(100 * count(hours_to_merge) / count(*), 1)      AS coverage_pct,\n",
+        "       round(percentile(hours_to_merge, 0.5) * 60, 1)        AS median_minutes,\n",
+        "       round(percentile(hours_to_merge, 0.9), 2)             AS p90_hours\n",
+        "FROM pr_time_to_merge"
+      ]
+    },
+    {
+      "name": "pr_by_author",
+      "displayName": "Timed merges by who opened the PR",
+      "queryLines": [
+        "SELECT CASE WHEN opened_by_bot THEN 'bot' ELSE 'human' END AS opened_by,\n",
+        "       count(*) AS timed_merges,\n",
+        "       round(percentile(hours_to_merge, 0.5) * 60, 1) AS median_minutes\n",
+        "FROM pr_time_to_merge\n",
+        "WHERE hours_to_merge IS NOT NULL\n",
+        "GROUP BY 1"
+      ]
+    },
+    {
+      "name": "issue_kpis",
+      "displayName": "Issue close timing",
+      "queryLines": [
+        "SELECT count(*)                                AS closes,\n",
+        "       round(percentile(days_to_close, 0.5), 1) AS median_days,\n",
+        "       count_if(closed_at_from_event)           AS closed_at_fallbacks\n",
+        "FROM issue_time_to_close"
+      ]
+    },
+    {
+      "name": "issue_by_reason",
+      "displayName": "Issue closes by reason and author",
+      "queryLines": [
+        "SELECT coalesce(state_reason, 'unknown')                             AS state_reason,\n",
+        "       CASE WHEN author_is_bot THEN 'bot author' ELSE 'human author' END AS author,\n",
+        "       count(*)                                                      AS closes,\n",
+        "       round(percentile(days_to_close, 0.5), 1)                      AS median_days\n",
+        "FROM issue_time_to_close\n",
+        "GROUP BY 1, 2"
+      ]
+    },
+    {
+      "name": "dq_latest",
+      "displayName": "Latest result of every check",
+      "queryLines": [
+        "SELECT layer, `check`, target, observed, expected, checked_at,\n",
+        "       CASE WHEN passed THEN 'pass' WHEN severity = 'warn' THEN 'warn' ELSE 'fail' END AS status\n",
+        "FROM dq_results\n",
+        "QUALIFY row_number() OVER (PARTITION BY layer, `check`, target ORDER BY checked_at DESC) = 1"
+      ]
+    },
+    {
+      "name": "dq_summary",
+      "displayName": "Check status counts",
+      "queryLines": [
+        "WITH latest AS (\n",
+        "  SELECT passed, severity\n",
+        "  FROM dq_results\n",
+        "  QUALIFY row_number() OVER (PARTITION BY layer, `check`, target ORDER BY checked_at DESC) = 1\n",
+        ")\n",
+        "SELECT count_if(passed)                              AS passing,\n",
+        "       count_if(NOT passed AND severity = 'warn')    AS warnings,\n",
+        "       count_if(NOT passed AND severity = 'error')   AS failing\n",
+        "FROM latest"
       ]
     }
   ],
@@ -16,14 +131,31 @@
       "layout": [
         {
           "widget": {
-            "name": "total_events",
+            "name": "intro",
+            "textbox_spec": "# GitHub activity, 2026-10-06\nPublic GitHub events from GH Archive, processed bronze → silver → gold on Databricks serverless. Counts cover the four modelled event types: pushes, pull requests, issues and stars."
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_events",
             "queries": [
               {
                 "name": "main_query",
                 "query": {
-                  "datasetName": "bot_share",
-                  "fields": [{ "name": "sum(events)", "expression": "SUM(`events`)" }],
-                  "disaggregated": false
+                  "datasetName": "kpis",
+                  "fields": [
+                    {
+                      "name": "events",
+                      "expression": "`events`"
+                    }
+                  ],
+                  "disaggregated": true
                 }
               }
             ],
@@ -31,26 +163,272 @@
               "version": 2,
               "widgetType": "counter",
               "encodings": {
-                "value": { "fieldName": "sum(events)", "displayName": "Events" }
+                "value": {
+                  "fieldName": "events",
+                  "displayName": "Events"
+                }
               },
-              "frame": { "showTitle": true, "title": "Events (4 modelled types)" }
+              "frame": {
+                "showTitle": true,
+                "title": "Events"
+              }
             }
           },
-          "position": { "x": 0, "y": 0, "width": 2, "height": 3 }
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 1,
+            "height": 3
+          }
         },
         {
           "widget": {
-            "name": "events_by_type",
+            "name": "kpi_bots",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "kpis",
+                  "fields": [
+                    {
+                      "name": "bot_share_pct",
+                      "expression": "`bot_share_pct`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "bot_share_pct",
+                  "displayName": "Bot share %"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Bot share %",
+                "showDescription": true,
+                "description": "Actors whose login ends in [bot]: a lower bound."
+              }
+            }
+          },
+          "position": {
+            "x": 1,
+            "y": 2,
+            "width": 1,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_stars",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "kpis",
+                  "fields": [
+                    {
+                      "name": "stars",
+                      "expression": "`stars`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "stars",
+                  "displayName": "Stars"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Stars"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 2,
+            "width": 1,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_prs",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "kpis",
+                  "fields": [
+                    {
+                      "name": "prs_merged",
+                      "expression": "`prs_merged`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "prs_merged",
+                  "displayName": "PRs merged"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "PRs merged"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 2,
+            "width": 1,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_issues",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "kpis",
+                  "fields": [
+                    {
+                      "name": "issues_closed",
+                      "expression": "`issues_closed`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "issues_closed",
+                  "displayName": "Issues closed"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Issues closed"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "hourly",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "hourly",
+                  "fields": [
+                    {
+                      "name": "hour",
+                      "expression": "`hour`"
+                    },
+                    {
+                      "name": "events",
+                      "expression": "`events`"
+                    },
+                    {
+                      "name": "event_type",
+                      "expression": "`event_type`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "hour",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "hour"
+                },
+                "y": {
+                  "fieldName": "events",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "events"
+                },
+                "color": {
+                  "fieldName": "event_type",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "event type"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Events per hour (UTC)",
+                "showDescription": true,
+                "description": "GH Archive has no PushEvents for 20:00–23:59 UTC this day; the data quality page records it."
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 5,
+            "width": 4,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "bot_share",
             "queries": [
               {
                 "name": "main_query",
                 "query": {
                   "datasetName": "bot_share",
                   "fields": [
-                    { "name": "event_type", "expression": "`event_type`" },
-                    { "name": "sum(events)", "expression": "SUM(`events`)" }
+                    {
+                      "name": "event_type",
+                      "expression": "`event_type`"
+                    },
+                    {
+                      "name": "bot_share_pct",
+                      "expression": "`bot_share_pct`"
+                    }
                   ],
-                  "disaggregated": false
+                  "disaggregated": true
                 }
               }
             ],
@@ -60,19 +438,823 @@
               "encodings": {
                 "x": {
                   "fieldName": "event_type",
-                  "scale": { "type": "categorical" },
-                  "displayName": "Event type"
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "event type"
                 },
                 "y": {
-                  "fieldName": "sum(events)",
-                  "scale": { "type": "quantitative" },
-                  "displayName": "Events"
+                  "fieldName": "bot_share_pct",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "bot share pct"
                 }
               },
-              "frame": { "showTitle": true, "title": "Events by type" }
+              "frame": {
+                "showTitle": true,
+                "title": "Bot share % by event type"
+              }
             }
           },
-          "position": { "x": 2, "y": 0, "width": 4, "height": 6 }
+          "position": {
+            "x": 4,
+            "y": 5,
+            "width": 2,
+            "height": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "repositories",
+      "displayName": "Repositories",
+      "layout": [
+        {
+          "widget": {
+            "name": "top_active",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "top_active",
+                  "fields": [
+                    {
+                      "name": "repo_name",
+                      "expression": "`repo_name`"
+                    },
+                    {
+                      "name": "events",
+                      "expression": "`events`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "events",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "events"
+                },
+                "y": {
+                  "fieldName": "repo_name",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "repo name"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Most active repositories (all events)"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 3,
+            "height": 9
+          }
+        },
+        {
+          "widget": {
+            "name": "top_starred",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "top_starred",
+                  "fields": [
+                    {
+                      "name": "repo_name",
+                      "expression": "`repo_name`"
+                    },
+                    {
+                      "name": "stars",
+                      "expression": "`stars`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "stars",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "stars"
+                },
+                "y": {
+                  "fieldName": "repo_name",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "repo name"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Most starred repositories",
+                "showDescription": true,
+                "description": "Stars since ingestion started, not a repository's lifetime total."
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 0,
+            "width": 3,
+            "height": 9
+          }
+        }
+      ]
+    },
+    {
+      "name": "prs_issues",
+      "displayName": "PRs & issues",
+      "layout": [
+        {
+          "widget": {
+            "name": "pr_caveat",
+            "textbox_spec": "### Read time-to-merge with its coverage\nPull request payloads no longer carry timestamps, so a merge can only be timed when its `opened` event was ingested too. With one day of data that is a small, fast-merging minority (merge queues and bots). Coverage rises as more days are loaded."
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "pr_merged",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "pr_kpis",
+                  "fields": [
+                    {
+                      "name": "merged",
+                      "expression": "`merged`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "merged",
+                  "displayName": "Merged PRs"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Merged PRs"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 1,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "pr_coverage",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "pr_kpis",
+                  "fields": [
+                    {
+                      "name": "coverage_pct",
+                      "expression": "`coverage_pct`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "coverage_pct",
+                  "displayName": "Coverage %"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Coverage %",
+                "showDescription": true,
+                "description": "Merged PRs whose opening is in the data."
+              }
+            }
+          },
+          "position": {
+            "x": 1,
+            "y": 2,
+            "width": 1,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "pr_median",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "pr_kpis",
+                  "fields": [
+                    {
+                      "name": "median_minutes",
+                      "expression": "`median_minutes`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "median_minutes",
+                  "displayName": "Median minutes to merge"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Median minutes to merge",
+                "showDescription": true,
+                "description": "Of timed merges only."
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 2,
+            "width": 1,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "issue_closes",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "issue_kpis",
+                  "fields": [
+                    {
+                      "name": "closes",
+                      "expression": "`closes`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "closes",
+                  "displayName": "Issue closes"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Issue closes"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 2,
+            "width": 1,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "issue_median",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "issue_kpis",
+                  "fields": [
+                    {
+                      "name": "median_days",
+                      "expression": "`median_days`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "median_days",
+                  "displayName": "Median days to close"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Median days to close"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 1,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "issue_fallback",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "issue_kpis",
+                  "fields": [
+                    {
+                      "name": "closed_at_fallbacks",
+                      "expression": "`closed_at_fallbacks`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "closed_at_fallbacks",
+                  "displayName": "Closes timed by event"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Closes timed by event",
+                "showDescription": true,
+                "description": "Close events whose issue snapshot had no closed_at; the event time is used."
+              }
+            }
+          },
+          "position": {
+            "x": 5,
+            "y": 2,
+            "width": 1,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "pr_by_author",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "pr_by_author",
+                  "fields": [
+                    {
+                      "name": "opened_by",
+                      "expression": "`opened_by`"
+                    },
+                    {
+                      "name": "median_minutes",
+                      "expression": "`median_minutes`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "opened_by",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "opened by"
+                },
+                "y": {
+                  "fieldName": "median_minutes",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "median minutes"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Median minutes to merge, by who opened the PR"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 5,
+            "width": 2,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "issue_reason",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "issue_by_reason",
+                  "fields": [
+                    {
+                      "name": "state_reason",
+                      "expression": "`state_reason`"
+                    },
+                    {
+                      "name": "closes",
+                      "expression": "`closes`"
+                    },
+                    {
+                      "name": "author",
+                      "expression": "`author`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "state_reason",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "state reason"
+                },
+                "y": {
+                  "fieldName": "closes",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "closes"
+                },
+                "color": {
+                  "fieldName": "author",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "author"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Issue closes by reason"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 5,
+            "width": 2,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "issue_days",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "issue_by_reason",
+                  "fields": [
+                    {
+                      "name": "state_reason",
+                      "expression": "`state_reason`"
+                    },
+                    {
+                      "name": "median_days",
+                      "expression": "`median_days`"
+                    },
+                    {
+                      "name": "author",
+                      "expression": "`author`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "state_reason",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "state reason"
+                },
+                "y": {
+                  "fieldName": "median_days",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "median days"
+                },
+                "color": {
+                  "fieldName": "author",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "author"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Median days to close, by reason"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 5,
+            "width": 2,
+            "height": 6
+          }
+        }
+      ]
+    },
+    {
+      "name": "health",
+      "displayName": "Pipeline health",
+      "layout": [
+        {
+          "widget": {
+            "name": "dq_intro",
+            "textbox_spec": "### Data quality\nEvery pipeline run checks bronze, silver and gold and appends the results to `dq_results`. Failing `error` checks stop the job; `warn` checks are recorded only. This page shows the latest result of each check."
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "dq_pass",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "dq_summary",
+                  "fields": [
+                    {
+                      "name": "passing",
+                      "expression": "`passing`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "passing",
+                  "displayName": "Passing"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Passing"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "dq_warn",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "dq_summary",
+                  "fields": [
+                    {
+                      "name": "warnings",
+                      "expression": "`warnings`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "warnings",
+                  "displayName": "Warnings"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Warnings"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "dq_fail",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "dq_summary",
+                  "fields": [
+                    {
+                      "name": "failing",
+                      "expression": "`failing`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "failing",
+                  "displayName": "Failing"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Failing"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "dq_table",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "dq_latest",
+                  "fields": [
+                    {
+                      "name": "status",
+                      "expression": "`status`"
+                    },
+                    {
+                      "name": "layer",
+                      "expression": "`layer`"
+                    },
+                    {
+                      "name": "check",
+                      "expression": "`check`"
+                    },
+                    {
+                      "name": "target",
+                      "expression": "`target`"
+                    },
+                    {
+                      "name": "observed",
+                      "expression": "`observed`"
+                    },
+                    {
+                      "name": "expected",
+                      "expression": "`expected`"
+                    },
+                    {
+                      "name": "checked_at",
+                      "expression": "`checked_at`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "status",
+                    "displayName": "status"
+                  },
+                  {
+                    "fieldName": "layer",
+                    "displayName": "layer"
+                  },
+                  {
+                    "fieldName": "check",
+                    "displayName": "check"
+                  },
+                  {
+                    "fieldName": "target",
+                    "displayName": "target"
+                  },
+                  {
+                    "fieldName": "observed",
+                    "displayName": "observed"
+                  },
+                  {
+                    "fieldName": "expected",
+                    "displayName": "expected"
+                  },
+                  {
+                    "fieldName": "checked_at",
+                    "displayName": "checked at"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Latest result per check"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 5,
+            "width": 6,
+            "height": 10
+          }
         }
       ]
     }
