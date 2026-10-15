@@ -1,0 +1,80 @@
+{
+  "datasets": [
+    {
+      "name": "bot_share",
+      "displayName": "Daily bot share",
+      "queryLines": [
+        "SELECT event_date, event_type, events, bot_events, bot_share\n",
+        "FROM daily_bot_share"
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "overview",
+      "displayName": "Overview",
+      "layout": [
+        {
+          "widget": {
+            "name": "total_events",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "bot_share",
+                  "fields": [{ "name": "sum(events)", "expression": "SUM(`events`)" }],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": { "fieldName": "sum(events)", "displayName": "Events" }
+              },
+              "frame": { "showTitle": true, "title": "Events (4 modelled types)" }
+            }
+          },
+          "position": { "x": 0, "y": 0, "width": 2, "height": 3 }
+        },
+        {
+          "widget": {
+            "name": "events_by_type",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "bot_share",
+                  "fields": [
+                    { "name": "event_type", "expression": "`event_type`" },
+                    { "name": "sum(events)", "expression": "SUM(`events`)" }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "event_type",
+                  "scale": { "type": "categorical" },
+                  "displayName": "Event type"
+                },
+                "y": {
+                  "fieldName": "sum(events)",
+                  "scale": { "type": "quantitative" },
+                  "displayName": "Events"
+                }
+              },
+              "frame": { "showTitle": true, "title": "Events by type" }
+            }
+          },
+          "position": { "x": 2, "y": 0, "width": 4, "height": 6 }
+        }
+      ]
+    }
+  ]
+}
