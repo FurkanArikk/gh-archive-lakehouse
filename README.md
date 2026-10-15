@@ -4,41 +4,23 @@ An incremental PySpark + Delta Lake pipeline that turns GitHub's public event st
 ([GH Archive](https://www.gharchive.org/)) into tested, reconciled analytics tables and a
 dashboard, on Databricks Free Edition serverless compute.
 
-```
-GH Archive hourly files → UC volume → bronze → silver (+ quarantine) → gold → AI/BI dashboard
-                                        └──── data quality checks between every layer ────┘
-```
+![GH Archive Lakehouse architecture](docs/architecture.png)
 
-**One day loaded (2026-10-06):**
+**One week loaded (2026-10-06 → 2026-10-12):**
 
 | Layer | Result |
 |---|---|
-| Landing | 24 hourly files, 338.6 MB gzipped |
-| Bronze | 1,505,681 raw events, 0 corrupt lines |
-| Silver | 1,223,705 typed events in 4 tables, reconciled exactly with bronze, 0 quarantined |
+| Landing | 168 hourly files, 1.96 GB gzipped |
+| Bronze | 7,727,123 raw events, 0 corrupt lines |
+| Silver | 6,256,971 typed events in 4 tables, reconciled exactly with bronze, 0 in quarantine |
 | Gold | 6 daily tables, reconciled with silver |
-| Quality | 31 checks per day: 29 pass, 2 warnings (a gap in GitHub's own data, see below) |
+| Quality | 0 failing checks; warnings for gaps in GitHub's own data (see below) |
 
 Everything is defined as code: the job and the dashboard deploy with Databricks Asset
 Bundles, and all development runs in Docker. Unit tests run against local Spark **and**
 a local Spark Connect server, the client API Databricks serverless uses.
 
-## Architecture
-
-```mermaid
-flowchart LR
-    GHA[GH Archive<br/>hourly .json.gz] -->|"make ingest<br/>(local, Docker)"| VOL[(UC volume<br/>landing)]
-    VOL -->|Auto Loader<br/>availableNow| BRZ[(bronze.events<br/>payload as JSON string)]
-    BRZ -->|"1 stream per event type<br/>parse · validate · MERGE"| SLV[(silver<br/>watch · push · pull_request · issues)]
-    BRZ -.->|invalid / corrupt rows| Q[(silver.quarantine)]
-    SLV --> CS{check_silver}
-    CS -->|replaceWhere on<br/>new days only| GLD[(gold<br/>6 daily tables)]
-    GLD --> CG{check_gold}
-    CG --> DASH[AI/BI dashboard]
-    CS -.-> DQ[(gold.dq_results)]
-    CG -.-> DQ
-    DQ -.-> DASH
-```
+## How it works
 
 | Step | Where | What it does |
 |---|---|---|
@@ -50,33 +32,42 @@ flowchart LR
 | `check_gold` | serverless job task | Every day present, and gold totals equal silver totals. |
 | Dashboard | AI/BI (Lakeview) | Four pages: overview, repositories, PRs & issues, pipeline health. |
 
-A failed `error` check fails its task, and the tasks after it don't run.
+A failed `error` check fails its task, and the tasks after it don't run. All check
+results, passing or not, are appended to `gold.dq_results`.
 
 ## What the data taught this pipeline
 
 The schemas weren't written from memory: Phase 0 profiled a real hourly file, and the
-running pipeline surfaced more. Each finding changed the code.
+running pipeline surfaced more. Each finding changed the code or the dashboard.
 
 1. **GitHub slimmed its event payloads.** Compared with October 2024, `PushEvent` lost its
    commits and sizes, and `PullRequestEvent.pull_request` went from 48 fields to 5 (no
    `created_at`, `merged_at` or author). PR merges are now their own `merged` action.
-   So commit counts and PR sizes can't be built, and PR time-to-merge has to pair an
-   `opened` event with a later `merged` event.
-2. **Stale issue snapshots.** 17 of 3,714 `closed` IssuesEvents carry an issue object that
-   still says `state: open` with no `closed_at`, a snapshot taken just before the close.
-   My first validation rule quarantined them; the reconciliation check exposed it. They
-   are genuine events, so silver keeps them, and gold uses the event's own timestamp as
-   the close time (`closed_at_from_event`).
-3. **A gap in the source.** GH Archive has *no* PushEvents from 20:00 to 23:59 UTC on
-   2026-10-06, and the volume fades from hour 16. All 24 files are present and valid, so
-   file counts and reconciliation can't see it. A warning-level `hourly_completeness`
-   check now records it; the dashboard shows it.
-4. **One day can't time PR merges.** Only 261 of 14,337 merges (1.8%) have their `opened`
-   event in the data, and those are the fastest ones (median 5 minutes). The dashboard
-   shows this coverage next to the metric instead of hiding it.
-5. **Bots are a fifth of the activity.** 20.1% of modelled events come from logins ending
-   in `[bot]` (29% of PR events). The most "active" repositories are single-account push
-   streams such as automated mirrors.
+   Commit counts and PR sizes can't be built from this data.
+2. **The feed is a sample.** Over the whole week a PR appears in 1.02 events on average,
+   and of 14,571 closes of issues *created* during the week only 289 (2%) have their
+   `opened` event in the data. Roughly 2% of related events survive, at random. So PR
+   time-to-merge, which has to pair an `opened` with a `merged` event, can time only 1.8%
+   of the 95,337 merges, and more days don't help. The dashboard reports merges and that
+   coverage instead of a misleading duration. Issue time-to-close is reliable because the
+   issue payload carries its own timestamps (median 0.7 days over 23,160 closes). Totals
+   undercount GitHub; shares and day-to-day comparisons hold up.
+3. **Gaps in the source.** There are *no* PushEvents at all on 2026-10-07, and none in
+   some hours of 10-06 (20–23 UTC), 10-08 (0–2), 10-09 (16–23) and 10-10 (0). All files
+   are present and valid, so file counts and reconciliation can't see this. A
+   warning-level `hourly_completeness` check records every gap, and the dashboard plots
+   pushes per hour with gaps as zero.
+4. **Stale issue snapshots.** 147 of 23,160 `closed` IssuesEvents carry an issue object
+   that still says `state: open` with no `closed_at`, a snapshot taken just before the
+   close. A first validation rule quarantined them; the reconciliation check exposed it.
+   They are genuine events, so silver keeps them and gold uses the event's own timestamp
+   as the close time (`closed_at_from_event`).
+5. **SHA-256 repositories.** One push had a 64-character `head` hash. GitHub supports
+   SHA-256 repositories, and the original 40-character rule quarantined it. Quarantine did
+   its job: the rule was widened and the event replayed into silver.
+6. **Bots are a fifth of the activity.** 21.3% of modelled events come from logins ending
+   in `[bot]` (27.9% of pull request events). The most "active" repositories are
+   single-account push streams such as automated mirrors.
 
 ## Design decisions and trade-offs
 
@@ -148,13 +139,14 @@ make auth-login HOST=https://<workspace>.cloud.databricks.com   # OAuth, once
 make whoami                                         # check the login
 
 make setup-uc                                       # schemas + volumes (safe to rerun)
-make ingest START=2026-10-06                        # 24 files, ~340 MB
+make ingest START=2026-10-06 END=2026-10-12         # 168 files, ~2 GB; one day is ~340 MB
 make deploy                                         # wheel + job + dashboard
 make run-job                                        # bronze → silver → checks → gold → checks
 ```
 
-Load more days with `make ingest START=… END=…` and `make run-job`: only the new days are
-processed. Other targets (`make help` lists them all):
+Load more days the same way: `make ingest START=… END=…`, then `make run-job`. Only the
+new days are processed; the `gold` task prints which dates it rebuilt. Other targets
+(`make help` lists them all):
 
 | Command | Purpose |
 |---|---|
@@ -163,6 +155,24 @@ processed. Other targets (`make help` lists them all):
 | `make reset-checkpoint NAME=silver_issues_events` | Replay one stream from the start (safe: `MERGE` skips known ids) |
 | `make ingest START=… ARGS=--dry-run` | Show what ingestion would download |
 | `make shell` | A shell inside the dev container |
+
+**Fixing quarantined events.** When a validation rule turns out to be wrong (as with the
+SHA-256 hashes), fix the rule, then replay that event type and remove the stale entries:
+
+```bash
+make deploy
+make reset-checkpoint NAME=silver_push_events     # the stream re-reads bronze; MERGE adds only missing ids
+```
+```sql
+DELETE FROM workspace.gh_silver.quarantine        -- before the next run, see below
+WHERE target_table = 'workspace.gh_silver.push_events' AND array_contains(reasons, 'invalid_head_sha');
+```
+```bash
+make run-job                                      # gold rebuilds only the days that gained rows
+```
+
+Delete the quarantine entries *before* `make run-job`: an event that is both in silver
+and still in quarantine is counted twice, and the reconciliation check fails the job.
 
 **Login details.** `make auth-login` runs the CLI's OAuth flow inside the container; the
 browser redirect to `localhost:8020` is forwarded in (see
@@ -203,13 +213,20 @@ events (bad ids, unknown actions, stale snapshots, truncated JSON). Highlights:
 - **Ingestion runs on a laptop.** In production it would be a scheduled job (or a cloud
   function) writing straight to object storage, with the pipeline triggered by file
   arrival instead of by hand.
-- **More history.** PR time-to-merge and star growth need weeks of data to mean much; at
-  scale I'd backfill and read PR timestamps from the GitHub API rather than infer them.
+- **The feed is sampled.** Lifecycle metrics that need several events per PR or issue
+  can't be built from GH Archive alone. In production I'd enrich from the GitHub API (PR
+  `created_at`/`merged_at`) or use a complete source such as the GitHub Archive BigQuery
+  tables, and label absolute counts as sampled.
 - **Completeness checks against a baseline.** The current check only flags hours with zero
-  events of a type; it caught hours 20–23 but not the degraded hours 17–19. A production
-  check would compare each hour with a rolling median.
-- **Physical layout.** One day is small enough to skip partitioning. With months of data
-  I'd cluster silver and gold on `event_date` (liquid clustering) and run `OPTIMIZE`.
+  events of a type. It catches outages like 2026-10-07, but not degraded hours (on 10-06
+  pushes dropped from about 62,000 an hour to 17,000 in hour 18 before stopping). A production check would
+  compare each hour with a rolling median.
+- **Replays need a manual quarantine cleanup** (see "Fixing quarantined events"). Silver
+  could delete an event's quarantine entry when it lands in its silver table, making
+  replays self-healing.
+- **Physical layout.** A week (7.7M bronze rows) is still small enough to skip
+  partitioning. With months of data I'd cluster silver and gold on `event_date` (liquid
+  clustering) and run `OPTIMIZE`.
 - **Separate environments and identities.** One `dev` target and my own user today; in
   production a `prod` bundle target, a service principal for the job, and alerts on
   failed checks.
@@ -232,6 +249,7 @@ src/gh_lakehouse/      the package: plain functions on DataFrames, no notebook c
 jobs/                  thin entry points for the Databricks job tasks
 resources/             Asset Bundle definitions: job and dashboard
 dashboards/            the AI/BI dashboard (Lakeview JSON)
+docs/                  architecture diagram
 tests/                 pytest suite and real-data fixture
 databricks.yml         bundle + single source of configuration
 Dockerfile, compose.yaml, Makefile, .github/workflows/ci.yml
