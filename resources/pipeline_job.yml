@@ -1,4 +1,5 @@
-# The pipeline job: bronze -> silver. Gold and quality tasks are added later.
+# The pipeline job: bronze -> silver -> check_silver -> gold -> check_gold.
+# A failed check fails its task, and the tasks after it don't run.
 # Paths are relative to this file.
 resources:
   jobs:
@@ -6,6 +7,13 @@ resources:
       name: gh-archive-pipeline
       # Two overlapping runs would race on the same streaming checkpoints.
       max_concurrent_runs: 1
+
+      parameters:
+        # Comma-separated YYYY-MM-DD days for the check tasks to re-check, instead of the
+        # pending ones: databricks bundle run gh_pipeline --only check_silver \
+        #   --params recheck_dates=2026-10-06
+        - name: recheck_dates
+          default: ""
 
       tasks:
         - task_key: bronze
@@ -28,6 +36,52 @@ resources:
           spark_python_task:
             python_file: ../jobs/silver.py
             parameters: *settings
+
+        # Bronze + silver checks on the dates gold is about to process.
+        - task_key: check_silver
+          depends_on:
+            - task_key: silver
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/quality.py
+            # YAML anchors can't extend a list, so the settings are repeated here.
+            parameters:
+              - --layer=silver
+              - --run-id={{job.run_id}}
+              - --dates={{job.parameters.recheck_dates}}
+              - --catalog=${var.catalog}
+              - --raw-schema=${var.raw_schema}
+              - --bronze-schema=${var.bronze_schema}
+              - --silver-schema=${var.silver_schema}
+              - --gold-schema=${var.gold_schema}
+              - --landing-volume=${var.landing_volume}
+              - --checkpoint-volume=${var.checkpoint_volume}
+
+        - task_key: gold
+          depends_on:
+            - task_key: check_silver
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/gold.py
+            parameters: *settings
+
+        - task_key: check_gold
+          depends_on:
+            - task_key: gold
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/quality.py
+            parameters:
+              - --layer=gold
+              - --run-id={{job.run_id}}
+              - --dates={{job.parameters.recheck_dates}}
+              - --catalog=${var.catalog}
+              - --raw-schema=${var.raw_schema}
+              - --bronze-schema=${var.bronze_schema}
+              - --silver-schema=${var.silver_schema}
+              - --gold-schema=${var.gold_schema}
+              - --landing-volume=${var.landing_volume}
+              - --checkpoint-volume=${var.checkpoint_volume}
 
       # Serverless: no cluster to configure. The environment pins the runtime version and
       # installs our wheel (built and uploaded by `databricks bundle deploy`).

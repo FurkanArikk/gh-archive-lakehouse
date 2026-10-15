@@ -8,7 +8,7 @@ RUN := docker compose run --rm dev
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build shell lint format test test-connect check auth-login whoami bundle-validate deploy run-job reset-checkpoint setup-uc ingest clean
+.PHONY: help build shell lint format test test-connect check auth-login whoami bundle-validate deploy run-job recheck reset-checkpoint setup-uc ingest clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-16s %s\n", $$1, $$2}'
@@ -51,6 +51,10 @@ deploy: .env ## Build the wheel and deploy the bundle (job + code) to the worksp
 
 run-job: .env ## Run the pipeline job on serverless and wait for it
 	$(RUN) databricks bundle run gh_pipeline
+
+recheck: .env ## Re-run the bronze/silver checks for given days: make recheck DATES=2026-10-06
+	@test -n "$(DATES)" || { echo "usage: make recheck DATES=YYYY-MM-DD[,YYYY-MM-DD...]"; exit 1; }
+	$(RUN) databricks bundle run gh_pipeline --only check_silver --params recheck_dates=$(DATES)
 
 # Replays a stream from the start on its next run. Safe for silver: MERGE skips known event_ids.
 reset-checkpoint: .env ## Delete one stream's checkpoint: make reset-checkpoint NAME=silver_issues_events
