@@ -8,8 +8,8 @@ from pyspark.sql import DataFrame, SparkSession
 from gh_lakehouse.bronze import (
     CORRUPT_RECORD,
     RAW_SCHEMA,
-    input_rows,
     read_landing_stream,
+    table_rows,
     to_bronze,
     write_bronze,
 )
@@ -139,8 +139,9 @@ def test_stream_processes_only_new_files(spark, tmp_path):
     assert count() == len(FIXTURE_LINES)
 
 
-def test_input_rows_treats_missing_counts_as_zero():
-    # Serverless reports None for batches without new data; local Spark reports 0.
-    progress = [{"numInputRows": 10}, {"numInputRows": None}, {}, {"numInputRows": 5}]
-    assert input_rows(progress) == 15
-    assert input_rows([]) == 0
+def test_table_rows_counts_and_handles_missing_tables(spark):
+    # run_bronze reports appended rows as table size after minus before.
+    spark.sql("DROP TABLE IF EXISTS rows_test")
+    assert table_rows(spark, "rows_test") == 0
+    spark.range(7).write.format("delta").saveAsTable("rows_test")
+    assert table_rows(spark, "rows_test") == 7

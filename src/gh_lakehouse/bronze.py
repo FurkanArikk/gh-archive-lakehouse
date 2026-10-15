@@ -15,8 +15,9 @@ Bronze keeps the data as close to the source as possible:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
+from pyspark.errors import AnalysisException
 from pyspark.sql import Column, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import BooleanType, LongType, StringType, StructField, StructType
@@ -138,23 +139,23 @@ def write_bronze(df: DataFrame, table: str, checkpoint: str) -> StreamingQuery:
     )
 
 
+def table_rows(spark: SparkSession, table: str) -> int:
+    """Row count of a Delta table (answered from metadata, so cheap), 0 if it doesn't exist."""
+    try:
+        return spark.table(table).count()
+    except AnalysisException:
+        return 0
+
+
 def run_bronze(spark: SparkSession, settings: Settings) -> int:
-    """Load new landing files into bronze. Returns the number of rows appended."""
-    source = f"{settings.landing_path}/gharchive/"
-    raw = read_landing_stream(spark, source)
-    query = write_bronze(
-        to_bronze(raw),
-        settings.bronze_table(BRONZE_TABLE),
-        f"{settings.checkpoint_path}/{CHECKPOINT_NAME}",
-    )
-    query.awaitTermination()
-    return input_rows(query.recentProgress)
+    """Load new landing files into bronze. Returns the number of rows appended.
 
-
-def input_rows(progress: list[dict[str, Any]]) -> int:
-    """Total rows read across a query's micro-batches.
-
-    On serverless (Spark Connect) a batch that found no new data can report
-    ``numInputRows`` as None rather than 0.
+    The count is the table's size before vs after: on serverless, the streaming progress
+    reports numInputRows as None even for batches that did read data.
     """
-    return sum(p.get("numInputRows") or 0 for p in progress)
+    table = settings.bronze_table(BRONZE_TABLE)
+    before = table_rows(spark, table)
+    raw = read_landing_stream(spark, f"{settings.landing_path}/gharchive/")
+    query = write_bronze(to_bronze(raw), table, f"{settings.checkpoint_path}/{CHECKPOINT_NAME}")
+    query.awaitTermination()
+    return table_rows(spark, table) - before
