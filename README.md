@@ -1,5 +1,8 @@
 # GH Archive Lakehouse on Databricks
 
+[![ci](https://github.com/FurkanArikk/gh-archive-lakehouse/actions/workflows/ci.yml/badge.svg)](https://github.com/FurkanArikk/gh-archive-lakehouse/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 An incremental PySpark + Delta Lake pipeline that turns GitHub's public event stream
 ([GH Archive](https://www.gharchive.org/)) into tested, reconciled analytics tables and a
 dashboard, on Databricks Free Edition serverless compute.
@@ -254,3 +257,10 @@ tests/                 pytest suite and real-data fixture
 databricks.yml         bundle + single source of configuration
 Dockerfile, compose.yaml, Makefile, .github/workflows/ci.yml
 ```
+
+## Data and license
+
+Event data comes from [GH Archive](https://www.gharchive.org/), a public record of GitHub's
+public event timeline; the test fixture is 21 of those public events. No data files are
+stored in this repository beyond that fixture. The code is released under the
+[MIT License](LICENSE).
