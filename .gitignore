@@ -20,3 +20,10 @@ derby.log
 
 # Local GH Archive downloads
 data/
+
+# OS and editor temp files (e.g. Windows writes *.TMP while saving an image)
+*.TMP
+*.tmp
+*~
+.DS_Store
+Thumbs.db
