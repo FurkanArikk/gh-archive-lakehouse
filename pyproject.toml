@@ -7,6 +7,9 @@ name = "gh-lakehouse"
 version = "0.1.0"
 description = "GH Archive events to a Delta Lake medallion pipeline on Databricks"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "FurkanArikk" }]
 # Databricks serverless runs Python 3.12 (spark 4.2.0); keep local in lockstep.
 requires-python = ">=3.12,<3.13"
 dependencies = [
